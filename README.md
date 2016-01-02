@@ -1,5 +1,12 @@
 # encode_speedrun.rb
-Simple workflow for encoding speedruns with timecode for YouTube
+
+Encode your raw recording of gameplay...
+
+![alt text](/images/raw.png)
+
+to a properly scaled and cropped video with an embedded timecode, optimized for YouTube:
+
+![alt text](/images/result.png)
 
 1.  Encode a short video of the start and end with frame numbers shown:
 
