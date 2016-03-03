@@ -48,7 +48,7 @@ class EncodeSpeedrun
     cmd.push '-coder ac'
     cmd.push '-movflags +faststart'
 
-    cmd.push '-c:a libfdk_aac'
+    cmd.push '-c:a aac'
     cmd.push '-b:a 128k'
 
     if @sample_duration
