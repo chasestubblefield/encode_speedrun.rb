@@ -4,13 +4,18 @@ require 'optparse'
 
 class EncodeSpeedrun
 
-  def initialize(input, output, start, finish, options={})
+  def initialize(input, options={})
     @input = input
-    @output = output
-    @start = start || 0
-    @finish = finish
+    @output = options[:output] || 'speedrun.mp4'
+    if options[:timecode]
+      @timecode = true
+      @start_frame, @finish_frame = options[:timecode]
+    elsif options[:start_frame]
+      @timecode = false
+      @start_frame = options[:start_frame]
+    end
     @overscan = options[:overscan] || 0
-    @sample = options[:sample] || nil
+    @sample = options[:sample]
   end
 
   def ffmpeg_encode_cmd
@@ -20,24 +25,30 @@ class EncodeSpeedrun
 
     vfilters = []
     vfilters.push 'fps=30'
-    vfilters.push "trim=start_frame=#{@start}"
-    vfilters.push 'setpts=PTS-STARTPTS'
+    if @start_frame
+      vfilters.push "trim=start_frame=#{@start_frame}"
+      vfilters.push 'setpts=PTS-STARTPTS'
+    end
     vfilters.push 'crop=704:480,scale=640:480'
     if @overscan > 0
       vfilters.push "crop=#{overscan_width}:#{overscan_height},scale=640:480"
     end
-    vfilters.push %Q{drawtext="timecode='00\\:00\\:00\\:00':r=30:#{drawtext_style}:enable='lt(n,#{total_frames})'"}
-    vfilters.push %Q{drawtext="text='#{final_timecode}':#{drawtext_style}:enable='gte(n,#{total_frames})'"}
+    if @timecode
+      vfilters.push %Q{drawtext="timecode='00\\:00\\:00\\:00':r=30:#{drawtext_style}:enable='lt(n,#{total_frames})'"}
+      vfilters.push %Q{drawtext="text='#{final_timecode}':#{drawtext_style}:enable='gte(n,#{total_frames})'"}
+    end
     cmd.push "-vf #{vfilters.join(',')}"
 
-    cmd.push "-af atrim=start_sample=#{start_sample},asetpts=PTS-STARTPTS"
+    if @start_frame
+      cmd.push "-af atrim=start_sample=#{start_sample},asetpts=PTS-STARTPTS"
+    end
 
     cmd.push '-aspect 4:3'
 
     cmd.push '-c:v libx264'
-    cmd.push '-crf 18'
+    cmd.push '-crf 14'
     cmd.push '-preset veryslow'
-    cmd.push '-tune film'
+    cmd.push '-tune animation'
 
     # YouTube encoding settings
     cmd.push '-profile:v high'
@@ -46,13 +57,13 @@ class EncodeSpeedrun
     cmd.push '-flags +cgop'
     cmd.push '-g 15'
     cmd.push '-coder ac'
-    cmd.push '-movflags +faststart'
+    cmd.push '-movflags +faststart+rtphint'
 
     cmd.push '-c:a aac'
-    cmd.push '-b:a 128k'
+    cmd.push '-b:a 256k'
 
-    if @sample_duration
-      cmd.push "-t #{@sample_duration}"
+    if @sample
+      cmd.push "-t #{@sample}"
     end
 
     cmd.push '-f mp4'
@@ -61,38 +72,12 @@ class EncodeSpeedrun
     cmd.join ' '
   end
 
-  def ffmpeg_frames_cmd
-    start_seconds = @start
-    start_seconds -= 15 if start_seconds > 15
-    end_seconds = @finish
-    end_seconds -= 15 if end_seconds > 15
-
-    cmd = ['ffmpeg']
-
-    cmd.push %Q{-i "#{@input}"}
-
-    common_filter = "fps=30,drawtext=text='%{n}':#{drawtext_style}"
-    start_trim = "trim=start=#{start_seconds}:duration=30,setpts=PTS-STARTPTS"
-    end_trim = "trim=start=#{end_seconds}:duration=30,setpts=PTS-STARTPTS"
-
-    cmd.push %Q{-filter_complex "[0:v]#{common_filter},#{start_trim}[a];[0:v]#{common_filter},#{end_trim}[b];[a][b]concat[out]"}
-    cmd.push '-map [out]'
-
-    cmd.push '-c:v libx264'
-    cmd.push '-preset ultrafast'
-
-    cmd.push '-f mp4'
-    cmd.push @output
-
-    cmd.join ' '
-  end
-
   def total_frames
-    @total_frames ||= @finish - @start
+    @total_frames ||= @finish_frame - @start_frame
   end
 
   def start_sample
-    @start_sample ||= @start * 1600
+    @start_sample ||= @start_frame * 1600
   end
 
   def final_timecode
@@ -119,11 +104,40 @@ class EncodeSpeedrun
     'x=(w-tw)/2:y=h-(2*lh):fontfile=/System/Library/Fonts/Menlo.ttc:fontsize=24:fontcolor=white:borderw=1'
   end
 
+  def ffmpeg_frames_cmd
+    start_seconds = @start
+    if start_seconds <= 15
+      start_seconds = 0
+    else
+      start_seconds -= 15
+    end
+    end_seconds = @finish
+    end_seconds -= 15 if end_seconds > 15
+
+    cmd = ['ffmpeg']
+
+    cmd.push %Q{-i "#{@input}"}
+
+    common_filter = "fps=30,drawtext=text='%{n}':#{drawtext_style}"
+    start_trim = "trim=start=#{start_seconds}:duration=30,setpts=PTS-STARTPTS"
+    end_trim = "trim=start=#{end_seconds}:duration=30,setpts=PTS-STARTPTS"
+
+    cmd.push %Q{-filter_complex "[0:v]#{common_filter},#{start_trim}[a];[0:v]#{common_filter},#{end_trim}[b];[a][b]concat[out]"}
+    cmd.push '-map [out]'
+
+    cmd.push '-c:v libx264'
+    cmd.push '-preset ultrafast'
+
+    cmd.push '-f mp4'
+    cmd.push @output
+
+    cmd.join ' '
+  end
+
 end
 
 if __FILE__ == $0
   options = {}
-  required_options = %i(input output finish)
   possible_overscan = %w{0 5 6.25}
 
   OptionParser.new do |opts|
@@ -135,11 +149,11 @@ if __FILE__ == $0
     opts.on('-o', '--output FILE', 'Output MP4 file (ex. speedrun.mp4)') do |file|
       options[:output] = file
     end
-    opts.on('-s', '--start N', Integer, 'Starting frame of speedrun (default 0), output will start here') do |n|
-      options[:start] = n
+    opts.on('--timecode TIMECODE') do |timecode|
+      options[:timecode] = timecode.split(':').map(&:to_i)
     end
-    opts.on('-f', '--finish N', Integer, 'Final frame of speedrun, timecode will stop here') do |n|
-      options[:finish] = n
+    opts.on('--start_frame START_FRAME', Integer) do |start_frame|
+      options[:start_frame] = start_frame
     end
     opts.on('--overscan PERCENT', possible_overscan, "Percentage to overscan, (default 0). Possible values: #{possible_overscan.join(', ')}") do |percent|
       options[:overscan] = percent.to_f / 100
@@ -159,14 +173,11 @@ if __FILE__ == $0
     end
   end.parse!
 
-  required_options.each do |key|
-    unless options.has_key?(key)
-      abort %Q{Required option #{key} not specified. Please use "encode_speedrun -h" to see options.}
-    end
+  unless options.has_key?(:input)
+    abort %Q{Input file not specified. Please use "encode_speedrun -h" to see options.}
   end
 
-  e = EncodeSpeedrun.new(options[:input], options[:output], options[:start], options[:finish],
-    :overscan => options[:overscan], :sample =>  options[:sample])
+  e = EncodeSpeedrun.new(options[:input], options)
   if options[:frames_only]
     cmd = e.ffmpeg_frames_cmd
   else
